@@ -1,0 +1,94 @@
+name: Mirror latest Kino Watch APK
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 */6 * * *"
+
+permissions:
+  contents: write
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Get latest APK from upstream
+        id: apk
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          API_URL="https://api.github.com/repos/kotlinbestuser/apk/contents"
+          APK_NAME="$(
+            curl -fsSL \
+              -H "Accept: application/vnd.github+json" \
+              "$API_URL" \
+            | jq -r '
+                [.[] | select(
+                  .type == "file"
+                  and (.name | test("^kino-watch-[0-9]+\\.[0-9]+\\.apk$"))
+                )]
+                | sort_by(
+                    .name
+                    | capture("^kino-watch-(?<major>[0-9]+)\\.(?<minor>[0-9]+)\\.apk$")
+                    | [(.major | tonumber), (.minor | tonumber)]
+                  )
+                | last
+                | .name
+              '
+          )"
+
+          if [ -z "$APK_NAME" ] || [ "$APK_NAME" = "null" ]; then
+            echo "Не найден APK формата kino-watch-X.Y.apk"
+            exit 1
+          fi
+
+          VERSION="$(
+            echo "$APK_NAME" \
+            | sed -E 's/^kino-watch-([0-9]+\.[0-9]+)\.apk$/\1/'
+          )"
+
+          echo "apk_name=$APK_NAME" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+
+          echo "Найдена версия: $VERSION ($APK_NAME)"
+
+      - name: Stop if this release already exists
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.apk.outputs.tag }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Release $TAG уже существует — делать нечего."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Download APK
+        if: steps.release.outputs.exists == 'false'
+        env:
+          APK_NAME: ${{ steps.apk.outputs.apk_name }}
+        run: |
+          curl -fL \
+            "https://raw.githubusercontent.com/kotlinbestuser/apk/main/$APK_NAME" \
+            -o "$APK_NAME"
+
+          test -s "$APK_NAME"
+          file "$APK_NAME"
+
+      - name: Create GitHub release and upload APK
+        if: steps.release.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.apk.outputs.tag }}
+          VERSION: ${{ steps.apk.outputs.version }}
+          APK_NAME: ${{ steps.apk.outputs.apk_name }}
+        run: |
+          gh release create "$TAG" "$APK_NAME" \
+            --title "Kino Watch $VERSION" \
+            --notes "Автоматическое зеркало APK из kotlinbestuser/apk."
