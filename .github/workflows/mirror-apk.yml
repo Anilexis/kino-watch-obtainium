@@ -13,82 +13,116 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Get latest APK from upstream
+      - name: Find latest APK in upstream repository
         id: apk
         env:
-          GH_TOKEN: ${{ github.token }}
+          UPSTREAM_API: https://api.github.com/repos/kotlinbestuser/apk/contents
+        shell: bash
         run: |
           set -euo pipefail
 
-          API_URL="https://api.github.com/repos/kotlinbestuser/apk/contents"
+          echo "Получаю список файлов из upstream..."
+          curl --fail --silent --show-error --location \
+            -H "Accept: application/vnd.github+json" \
+            "$UPSTREAM_API" \
+            -o upstream-files.json
+
+          echo "Найденные стабильные APK:"
+          jq -r '
+            .[]
+            | select(
+                .type == "file"
+                and (.name | test("^kino-watch-[0-9]+\\.[0-9]+\\.apk$"))
+              )
+            | .name
+          ' upstream-files.json
+
           APK_NAME="$(
-            curl -fsSL \
-              -H "Accept: application/vnd.github+json" \
-              "$API_URL" \
-            | jq -r '
-                [.[] | select(
-                  .type == "file"
-                  and (.name | test("^kino-watch-[0-9]+\\.[0-9]+\\.apk$"))
-                )]
-                | sort_by(
-                    .name
-                    | capture("^kino-watch-(?<major>[0-9]+)\\.(?<minor>[0-9]+)\\.apk$")
-                    | [(.major | tonumber), (.minor | tonumber)]
+            jq -r '
+              [
+                .[]
+                | select(
+                    .type == "file"
+                    and (.name | test("^kino-watch-[0-9]+\\.[0-9]+\\.apk$"))
                   )
-                | last
-                | .name
-              '
+                | {
+                    name: .name,
+                    version: (
+                      .name
+                      | capture("^kino-watch-(?<major>[0-9]+)\\.(?<minor>[0-9]+)\\.apk$")
+                      | [(.major | tonumber), (.minor | tonumber)]
+                    )
+                  }
+              ]
+              | sort_by(.version)
+              | last
+              | .name // empty
+            ' upstream-files.json
           )"
 
-          if [ -z "$APK_NAME" ] || [ "$APK_NAME" = "null" ]; then
-            echo "Не найден APK формата kino-watch-X.Y.apk"
+          if [ -z "$APK_NAME" ]; then
+            echo "::error::Не найден APK формата kino-watch-X.Y.apk"
             exit 1
           fi
 
-          VERSION="$(
-            echo "$APK_NAME" \
-            | sed -E 's/^kino-watch-([0-9]+\.[0-9]+)\.apk$/\1/'
-          )"
+          VERSION="$(echo "$APK_NAME" | sed -E 's/^kino-watch-([0-9]+\.[0-9]+)\.apk$/\1/')"
 
+          echo "Выбрана версия: $VERSION"
           echo "apk_name=$APK_NAME" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
 
-          echo "Найдена версия: $VERSION ($APK_NAME)"
-
-      - name: Stop if this release already exists
+      - name: Check whether release already exists
         id: release
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.apk.outputs.tag }}
+        shell: bash
         run: |
+          set -euo pipefail
+
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
-            echo "Release $TAG уже существует — делать нечего."
+            echo "Release $TAG уже опубликован."
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "Нужен новый Release: $TAG"
           fi
 
-      - name: Download APK
+      - name: Download selected APK
         if: steps.release.outputs.exists == 'false'
         env:
           APK_NAME: ${{ steps.apk.outputs.apk_name }}
+        shell: bash
         run: |
-          curl -fL \
-            "https://raw.githubusercontent.com/kotlinbestuser/apk/main/$APK_NAME" \
-            -o "$APK_NAME"
+          set -euo pipefail
+
+          URL="https://raw.githubusercontent.com/kotlinbestuser/apk/main/$APK_NAME"
+          echo "Скачиваю: $URL"
+
+          curl --fail --silent --show-error --location \
+            "$URL" \
+            --output "$APK_NAME"
 
           test -s "$APK_NAME"
-          file "$APK_NAME"
 
-      - name: Create GitHub release and upload APK
+          echo "Размер файла:"
+          ls -lh "$APK_NAME"
+
+          echo "SHA-256:"
+          sha256sum "$APK_NAME"
+
+      - name: Publish release
         if: steps.release.outputs.exists == 'false'
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.apk.outputs.tag }}
           VERSION: ${{ steps.apk.outputs.version }}
           APK_NAME: ${{ steps.apk.outputs.apk_name }}
+        shell: bash
         run: |
+          set -euo pipefail
+
           gh release create "$TAG" "$APK_NAME" \
             --title "Kino Watch $VERSION" \
-            --notes "Автоматическое зеркало APK из kotlinbestuser/apk."
+            --notes "Автоматическое зеркало $APK_NAME из kotlinbestuser/apk."
