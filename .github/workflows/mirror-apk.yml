@@ -81,7 +81,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          if gh release view "$TAG" >/dev/null 2>&1; then
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
             echo "Release $TAG уже опубликован."
           else
@@ -124,5 +124,6 @@ jobs:
           set -euo pipefail
 
           gh release create "$TAG" "$APK_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
             --title "Kino Watch $VERSION" \
             --notes "Автоматическое зеркало $APK_NAME из kotlinbestuser/apk."
